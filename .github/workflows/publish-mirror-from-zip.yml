@@ -1,0 +1,76 @@
+name: Publish Mirror from ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Ensure zip exists
+        run: |
+          set -e
+          test -f ttoka-mirror.zip || { echo "ttoka-mirror.zip not found in repo root"; exit 1; }
+
+      - name: Unzip to site/
+        run: |
+          set -euxo pipefail
+          rm -rf site
+          mkdir -p site/raw
+          unzip -q ttoka-mirror.zip -d site/raw
+
+          # If the zip contains a single top-level folder (e.g., ttoka.org/), use its contents
+          # Otherwise, publish everything that was unzipped.
+          TOP_COUNT=$(find site/raw -maxdepth 1 -mindepth 1 -type d | wc -l)
+          FILE_COUNT=$(find site/raw -maxdepth 1 -mindepth 1 -type f | wc -l)
+
+          if [ "$TOP_COUNT" -eq 1 ] && [ "$FILE_COUNT" -eq 0 ]; then
+            INNER_DIR=$(find site/raw -maxdepth 1 -mindepth 1 -type d | head -n 1)
+            echo "Detected single inner directory: $INNER_DIR"
+            mkdir -p site/public
+            shopt -s dotglob || true
+            mv "$INNER_DIR"/* site/public/
+          else
+            echo "Publishing all contents of zip root"
+            mkdir -p site/public
+            shopt -s dotglob || true
+            mv site/raw/* site/public/
+          fi
+
+          # If there is no index.html at top, try to use %3F.html (common for odd homepages)
+          if [ ! -f site/public/index.html ] && [ -f site/public/%3F.html ]; then
+            cp site/public/%3F.html site/public/index.html
+            echo "No index.html found; mapped %3F.html to index.html"
+          fi
+
+          # List result
+          echo "Top of site/public:"
+          ls -la site/public | head -n 50
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
